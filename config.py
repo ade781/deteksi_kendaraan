@@ -5,7 +5,7 @@ import numpy as np
 # =============================================================================
 
 # Link CCTV YouTube yang akan dianalisis
-YOUTUBE_URL = "https://www.youtube.com/live/JPrX7b3Xhmw?si=vD6rWKeHjgsmbggN"
+YOUTUBE_URL = "https://www.youtube.com/live/MJOolZOl3i0?si=yTLpdCVw4L58tspT"
 
 # Path ke model YOLOv8. 'yolov8n.pt' adalah versi nano yang paling ringan.
 MODEL_PATH = 'yolov8n.pt'
