@@ -1,136 +1,128 @@
+# main.py
+
 import cv2
-import numpy as np
+import sys
+import threading
+from queue import Queue, Empty
 from ultralytics import YOLO
 from vidgear.gears import CamGear
 
-# Impor dari file lokal
 import config
 from vehicle_counter import VehicleCounter
-
-# --- PERUBAHAN: Tambahkan konstanta untuk frame skipping ---
-# Angka ini berarti kita hanya akan memproses 1 dari setiap 3 frame.
-# Anda bisa menaikkan angka ini (misal, 5) jika video masih terasa lambat.
-FRAME_SKIP_RATE = 3
-# --------------------------------------------------------
-
-# Variabel global untuk menyimpan titik-titik yang diklik oleh user
-points = []
+from ui_drawer import UIDrawer
 
 
-def mouse_callback(event, x, y, flags, param):
-    """
-    Fungsi callback untuk menangani event mouse.
-    Menyimpan koordinat saat user mengklik tombol kiri mouse.
-    """
-    global points
-    if event == cv2.EVENT_LBUTTONDOWN:
-        points.append([x, y])
-        print(f"Titik ditambahkan: ({x}, {y}). Total: {len(points)} titik.")
+class VehicleDetectionApp:
+    def __init__(self):
+        self.config = config
+        self.model = YOLO(self.config.MODEL_PATH)
+        self.ui_drawer = UIDrawer()
 
+        self.frame_queue = Queue(maxsize=2)  # Antrean untuk frame mentah
+        self.processed_frame = None  # Frame yang sudah diolah
+        self.is_running = threading.Event()
+        self.is_running.set()
 
-def draw_polygon_ui(frame):
-    """
-    Menampilkan UI interaktif bagi user untuk menggambar poligon di atas frame.
-    Mengembalikan poligon yang sudah jadi atau None jika dibatalkan.
-    """
-    global points
-    window_name = "Gambar Zona Hitung Anda"
-    cv2.namedWindow(window_name)
-    cv2.setMouseCallback(window_name, mouse_callback)
+    def _stream_reader(self):
+        """Thread untuk membaca frame dari stream secepat mungkin."""
+        print(f"Memulai stream dari: {self.config.YOUTUBE_URL}...")
+        try:
+            stream = CamGear(source=self.config.YOUTUBE_URL,
+                             stream_mode=True, logging=True).start()
+        except Exception as e:
+            print(f"Error fatal: Gagal memulai stream. Detail: {e}")
+            self.is_running.clear()
+            return
 
-    print("\n--- INSTRUKSI MENGGAMBAR ZONA ---")
-    print("1. Klik pada gambar untuk menambahkan titik sudut poligon.")
-    print("2. Minimal 3 titik diperlukan untuk membuat sebuah zona.")
-    print("3. Tekan tombol 'ENTER' untuk mengkonfirmasi dan memulai deteksi.")
-    print("4. Tekan tombol 'C' untuk menghapus semua titik dan mengulang dari awal.")
-    print("5. Tekan tombol 'Q' untuk membatalkan dan menggunakan zona default.")
-    print("---------------------------------\n")
+        while self.is_running.is_set():
+            frame = stream.read()
+            if frame is None:
+                print("Stream berakhir atau terputus.")
+                self.is_running.clear()
+                break
 
-    while True:
-        temp_frame = frame.copy()
-        for point in points:
-            cv2.circle(temp_frame, tuple(point), 5, (0, 0, 255), -1)
-        if len(points) > 1:
-            cv2.polylines(temp_frame, [np.array(points, np.int32)], isClosed=False, color=(
-                0, 255, 255), thickness=2)
+            if not self.frame_queue.full():
+                self.frame_queue.put(frame)
 
-        cv2.putText(temp_frame, "Klik utk menambah titik. Tekan ENTER utk selesai.",
-                    (20, 40), 0, 1, (255, 255, 255), 2)
-        cv2.putText(temp_frame, "Tekan 'c' utk hapus, 'q' utk batal.",
-                    (20, 80), 0, 1, (255, 255, 255), 2)
-
-        cv2.imshow(window_name, temp_frame)
-        key = cv2.waitKey(1) & 0xFF
-
-        if key == ord('q'):
-            cv2.destroyWindow(window_name)
-            return None
-        if key == ord('c'):
-            points = []
-            print("Semua titik dihapus. Silakan gambar ulang.")
-        if key == 13:
-            if len(points) < 3:
-                print("Error: Minimal 3 titik diperlukan. Silakan tambahkan titik lagi.")
-            else:
-                cv2.destroyWindow(window_name)
-                return np.array(points, np.int32)
-
-
-def main():
-    model = YOLO(config.MODEL_PATH)
-    stream = CamGear(source=config.YOUTUBE_URL,
-                     stream_mode=True, logging=True).start()
-
-    first_frame = stream.read()
-    if first_frame is None:
-        print("Error: Gagal membaca frame dari stream CCTV.")
         stream.stop()
-        return
+        print("Thread pembaca stream berhenti.")
 
-    user_defined_zone = draw_polygon_ui(first_frame)
+    def _frame_processor(self, zone_polygon):
+        """Thread untuk memproses frame dengan model YOLO."""
+        counter = VehicleCounter(zone_polygon, self.config)
+        print("Thread prosesor siap.")
 
-    if user_defined_zone is None:
-        print("Tidak ada zona yang digambar, menggunakan zona default dari config.py.")
-        zone_polygon = config.ZONE_POLYGON
-    else:
-        print("Zona berhasil dibuat oleh user.")
-        zone_polygon = user_defined_zone
+        while self.is_running.is_set():
+            try:
+                # Ambil frame terbaru dari antrean, jangan menunggu
+                frame = self.frame_queue.get(block=False)
 
-    counter = VehicleCounter(zone_polygon, config)
+                # Jalankan deteksi
+                results = self.model.track(
+                    frame, persist=True, classes=self.config.CLASS_ID_VEHICLES, verbose=False)
 
-    # --- PERUBAHAN: Variabel untuk logika frame skipping ---
-    frame_count = 0
-    last_results = None
-    # -----------------------------------------------------
+                # Anotasi frame dan simpan sebagai frame yang sudah diproses
+                self.processed_frame = counter.process_frame(frame, results)
 
-    print("\nMemulai deteksi dan penghitungan...")
-    while True:
-        frame = stream.read()
-        if frame is None:
-            break
+            except Empty:
+                # Jika antrean kosong, tidak ada yang perlu diproses
+                continue
 
-        frame_count += 1
-        annotated_frame = frame.copy()  # Mulai dengan frame asli
+        print("Thread prosesor berhenti.")
 
-        # Hanya jalankan deteksi berat pada frame tertentu
-        if frame_count % FRAME_SKIP_RATE == 0:
-            results = model.track(frame, persist=True)
-            last_results = results  # Simpan hasil deteksi terakhir
+    def run(self):
+        """Mempersiapkan UI dan menjalankan semua thread."""
+        # Dapatkan frame pertama untuk UI gambar zona
+        print("Mengambil frame pertama untuk UI...")
+        stream = CamGear(source=self.config.YOUTUBE_URL,
+                         stream_mode=True).start()
+        first_frame = stream.read()
+        stream.stop()
 
-        # Untuk semua frame (termasuk yang di-skip), gunakan hasil terakhir untuk diproses
-        # Ini membuat tampilan visual tetap mulus
-        if last_results is not None:
-            annotated_frame = counter.process_frame(frame, last_results)
+        if first_frame is None:
+            print("Error: Gagal mendapatkan frame pertama. Aplikasi tidak bisa dimulai.")
+            return
 
-        cv2.imshow("Analisis Volume Kendaraan", annotated_frame)
+        zone_polygon = self.ui_drawer.draw_polygon_ui(first_frame)
+        if zone_polygon is None:
+            zone_polygon = self.config.ZONE_POLYGON
+            print("Zona kustom dibatalkan, menggunakan zona default.")
+        else:
+            print("Zona berhasil dibuat oleh pengguna.")
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        # Inisialisasi frame yang diproses dengan frame pertama
+        self.processed_frame = first_frame
 
-    cv2.destroyAllWindows()
-    stream.stop()
-    print("Aplikasi ditutup.")
+        # Jalankan thread
+        reader_thread = threading.Thread(
+            target=self._stream_reader, daemon=True)
+        processor_thread = threading.Thread(
+            target=self._frame_processor, args=(zone_polygon,), daemon=True)
+
+        reader_thread.start()
+        processor_thread.start()
+
+        print("\nMemulai aplikasi... Tekan 'q' pada jendela video untuk keluar.")
+
+        # Loop utama untuk menampilkan video
+        while self.is_running.is_set():
+            cv2.imshow("Analisis Volume Kendaraan - Dioptimalkan",
+                       self.processed_frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                self.stop()
+
+        # Tunggu thread selesai
+        reader_thread.join(timeout=2)
+        processor_thread.join(timeout=2)
+
+    def stop(self):
+        """Menghentikan semua proses dengan aman."""
+        print("Perintah berhenti diterima, menutup aplikasi...")
+        self.is_running.clear()
+        cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    main()
+    app = VehicleDetectionApp()
+    app.run()
+    print("Aplikasi ditutup.")

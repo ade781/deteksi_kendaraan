@@ -1,9 +1,13 @@
+# vehicle_counter.py
+
 import cv2
+import numpy as np
 
 
 class VehicleCounter:
     """
-    Sebuah kelas untuk mengelola logika deteksi dan penghitungan kendaraan.
+    Mengelola logika deteksi, pelacakan, dan penghitungan kendaraan
+    secara dinamis berdasarkan konfigurasi.
     """
 
     def __init__(self, zone_polygon, config):
@@ -11,91 +15,97 @@ class VehicleCounter:
         Inisialisasi penghitung.
 
         Args:
-            zone_polygon (np.array): Array numpy berisi koordinat poligon zona hitung.
-            config (module): Modul konfigurasi yang berisi pengaturan tampilan.
+            zone_polygon (np.array): Koordinat poligon zona hitung.
+            config (module): Modul konfigurasi (config.py).
         """
         self.zone = zone_polygon
         self.config = config
-        self.counted_ids = set()
+        self.counted_track_ids = set()
 
-        # --- PERUBAHAN: Inisialisasi penghitung terpisah ---
+        # Inisialisasi penghitung secara dinamis dari config
+        self.vehicle_counts = {
+            class_id: 0 for class_id in self.config.CLASS_ID_VEHICLES}
         self.total_count = 0
-        self.car_count = 0
-        self.motorcycle_count = 0
-        # Di sini bisa ditambahkan jenis kendaraan lain jika perlu (bus, truk)
-        # ----------------------------------------------------
+
+    def _get_center_bottom(self, box):
+        """Menghitung titik tengah bawah dari bounding box."""
+        x1, y1, x2, y2 = box
+        return (int((x1 + x2) / 2), int(y2))
 
     def process_frame(self, frame, results):
         """
-        Memproses satu frame video untuk mendeteksi dan menghitung kendaraan.
+        Memproses satu frame video, menganotasi, dan menghitung kendaraan.
 
         Args:
             frame (np.array): Frame video asli.
-            results (list): Hasil deteksi dari model YOLO.
+            results: Hasil deteksi dari model YOLO.
 
         Returns:
-            np.array: Frame video yang sudah dianotasi dengan deteksi dan hitungan.
+            np.array: Frame video yang telah dianotasi.
         """
-        # --- PERUBAHAN: Kita akan menggambar manual agar bisa filter object ---
-        # Kita mulai dengan frame asli, bukan yang sudah di-plot
         annotated_frame = frame.copy()
-        # ------------------------------------------------------------------
 
-        # Gambar zona hitung pada frame
+        # Gambar zona hitung
         cv2.polylines(annotated_frame, [self.zone], isClosed=True,
                       color=self.config.ZONE_COLOR, thickness=self.config.ZONE_THICKNESS)
 
-        # Cek jika ada objek yang berhasil dilacak
         if results[0].boxes.id is not None:
             boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
             track_ids = results[0].boxes.id.int().cpu().tolist()
             class_ids = results[0].boxes.cls.int().cpu().tolist()
-            class_names = results[0].names  # Ambil nama kelas dari hasil
 
             for box, track_id, class_id in zip(boxes, track_ids, class_ids):
-                # --- PERUBAHAN: Fokus HANYA pada kendaraan ---
+                # Proses hanya jika class_id adalah kendaraan yang didefinisikan di config
                 if class_id in self.config.CLASS_ID_VEHICLES:
-                    # Gambar bounding box untuk kendaraan
+                    class_info = self.config.CLASS_DATA[class_id]
+                    color = class_info["color"]
+                    name = class_info["name"]
+
+                    # Gambar bounding box dan label
                     x1, y1, x2, y2 = box
                     cv2.rectangle(annotated_frame, (x1, y1),
-                                  (x2, y2), (0, 255, 0), 2)
+                                  (x2, y2), color, 2)
+                    cv2.putText(annotated_frame, f"{name} #{track_id}", (x1, y1 - 10),
+                                self.config.TEXT_FONT, 0.7, color, 2)
 
-                    # --- Logika penghitungan tetap sama ---
-                    point_to_check = (int((x1 + x2) / 2), int(y2))
-                    is_inside = cv2.pointPolygonTest(
-                        self.zone, point_to_check, False)
-                    # -------------------------------------
+                    # Titik untuk pengecekan masuk zona
+                    point_to_check = self._get_center_bottom(box)
 
-                    if is_inside >= 0:
-                        if track_id not in self.counted_ids:
-                            self.counted_ids.add(track_id)
+                    # Cek apakah kendaraan berada di dalam zona
+                    if cv2.pointPolygonTest(self.zone, point_to_check, False) >= 0:
+                        # Jika kendaraan belum pernah dihitung, hitung sekarang
+                        if track_id not in self.counted_track_ids:
+                            self.counted_track_ids.add(track_id)
+                            self.vehicle_counts[class_id] += 1
                             self.total_count += 1
 
-                            # --- PERUBAHAN: Tambah hitungan berdasarkan kelas ---
-                            if class_id == 2:  # 2 adalah ID untuk 'car'
-                                self.car_count += 1
-                            elif class_id == 3:  # 3 adalah ID untuk 'motorcycle'
-                                self.motorcycle_count += 1
-                            # --------------------------------------------------
-
+                            # Tandai kendaraan yang baru dihitung dengan lingkaran
                             cv2.circle(annotated_frame, point_to_check,
-                                       self.config.CENTER_CIRCLE_RADIUS, self.config.CENTER_CIRCLE_COLOR, -1)
+                                       self.config.CENTER_CIRCLE_RADIUS,
+                                       self.config.CENTER_CIRCLE_COLOR, -1)
 
-        # --- PERUBAHAN: Tampilkan semua hitungan ---
-        cv2.putText(annotated_frame, f"Total Kendaraan: {self.total_count}",
-                    (self.config.TEXT_POSITION[0],
-                     self.config.TEXT_POSITION[1]),
-                    self.config.TEXT_FONT, 1.2, self.config.TEXT_COLOR, self.config.TEXT_THICKNESS)
-
-        cv2.putText(annotated_frame, f"Mobil: {self.car_count}",
-                    (self.config.TEXT_POSITION[0],
-                     self.config.TEXT_POSITION[1] + 40),
-                    self.config.TEXT_FONT, 1.2, self.config.TEXT_COLOR, self.config.TEXT_THICKNESS)
-
-        cv2.putText(annotated_frame, f"Motor: {self.motorcycle_count}",
-                    (self.config.TEXT_POSITION[0],
-                     self.config.TEXT_POSITION[1] + 80),
-                    self.config.TEXT_FONT, 1.2, self.config.TEXT_COLOR, self.config.TEXT_THICKNESS)
-        # -------------------------------------------
-
+        self._draw_counts(annotated_frame)
         return annotated_frame
+
+    def _draw_counts(self, frame):
+        """Menampilkan teks hitungan kendaraan di layar."""
+        pos_x = self.config.TEXT_START_POSITION[0]
+        pos_y = self.config.TEXT_START_POSITION[1]
+
+        # Tampilkan total
+        cv2.putText(frame, f"Total Kendaraan: {self.total_count}",
+                    (pos_x, pos_y), self.config.TEXT_FONT, self.config.TEXT_SCALE,
+                    self.config.TEXT_COLOR, self.config.TEXT_THICKNESS)
+
+        # Tampilkan hitungan per jenis kendaraan secara dinamis
+        for i, class_id in enumerate(self.config.CLASS_ID_VEHICLES):
+            class_info = self.config.CLASS_DATA[class_id]
+            name = class_info["name"]
+            count = self.vehicle_counts[class_id]
+
+            # Hitung posisi y untuk baris teks berikutnya
+            current_y = pos_y + (self.config.TEXT_LINE_HEIGHT * (i + 1))
+
+            cv2.putText(frame, f"{name}: {count}",
+                        (pos_x, current_y), self.config.TEXT_FONT, self.config.TEXT_SCALE,
+                        self.config.TEXT_COLOR, self.config.TEXT_THICKNESS)
