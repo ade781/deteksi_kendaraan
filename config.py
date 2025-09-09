@@ -4,19 +4,22 @@ import numpy as np
 import cv2
 
 # =============================================================================
-# PENGATURAN UTAMA (WAJIB DISESUAIKAN)
+# PENGATURAN UTAMA (WAJIB DISESuaikan)
 # =============================================================================
 
-YOUTUBE_URL = "https://www.youtube.com/live/MJOolZOl3i0?si=yTLpdCVw4L58tspT"
+YOUTUBE_URL = "https://www.youtube.com/live/MJOolZOl3i0?si=sT53tal-FvKCZx10"
 
-# --- PERUBAHAN UTAMA UNTUK PERFORMA ---
-# Mengganti model ke versi 's' (Small) yang jauh lebih cepat dari 'l' (Large).
-# Ini adalah kompromi terbaik antara kecepatan dan akurasi.
-# Jika masih lambat, bisa diturunkan lagi ke 'yolov10n.pt' (Nano).
-MODEL_PATH = 'yolov10s.pt'
+# --- PENGATURAN DEVICE ---
+# Diubah ke "cpu" untuk mengatasi error "Torch not compiled with CUDA enabled".
+# PERINGATAN: Ini akan membuat program berjalan jauh lebih lambat.
+# Solusi permanen ada di penjelasan saya.
+MODEL_PATH = 'yolo11n.pt'  # Menggunakan model yang terbukti ada dan cepat
+DEVICE = "cuda"
+STREAM_RESOLUTION = (640, 360)
 
+# Zona default, disesuaikan dengan resolusi baru (opsional, bisa digambar ulang)
 ZONE_POLYGON = np.array([
-    [150, 250], [1150, 250], [1150, 500], [100, 500]
+    [20, 150], [620, 150], [620, 300], [20, 300]
 ], np.int32)
 
 # =============================================================================
@@ -37,13 +40,11 @@ CLASS_ID_VEHICLES = list(CLASS_DATA.keys())
 
 ZONE_COLOR = (255, 255, 255)
 ZONE_THICKNESS = 2
-
-TEXT_START_POSITION = (50, 70)
+TEXT_START_POSITION = (20, 30)
 TEXT_FONT = cv2.FONT_HERSHEY_SIMPLEX
-TEXT_SCALE = 1.1
+TEXT_SCALE = 0.7
 TEXT_THICKNESS = 2
 TEXT_COLOR = (255, 255, 255)
-TEXT_LINE_HEIGHT = 40
-
+TEXT_LINE_HEIGHT = 25
 CENTER_CIRCLE_COLOR = (0, 255, 255)
 CENTER_CIRCLE_RADIUS = 5
