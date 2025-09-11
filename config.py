@@ -7,15 +7,15 @@ import cv2
 # PENGATURAN UTAMA (WAJIB DISESuaikan)
 # =============================================================================
 
-YOUTUBE_URL = "https://www.youtube.com/live/MJOolZOl3i0?si=sT53tal-FvKCZx10"
+YOUTUBE_URL = "https://www.youtube.com/live/P2QdljtuKwo?si=iAfnFoQSf7xcccrH"
 
 # --- PENGATURAN DEVICE ---
 # Diubah ke "cpu" untuk mengatasi error "Torch not compiled with CUDA enabled".
 # PERINGATAN: Ini akan membuat program berjalan jauh lebih lambat.
 # Solusi permanen ada di penjelasan saya.
-MODEL_PATH = 'yolo11n.pt'  # Menggunakan model yang terbukti ada dan cepat
+MODEL_PATH = 'yolo11m.pt'  # Menggunakan model yang terbukti ada dan cepat
 DEVICE = "cuda"
-STREAM_RESOLUTION = (640, 360)
+STREAM_RESOLUTION = (720, 360)
 
 # Zona default, disesuaikan dengan resolusi baru (opsional, bisa digambar ulang)
 ZONE_POLYGON = np.array([
