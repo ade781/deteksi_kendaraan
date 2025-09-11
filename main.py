@@ -4,6 +4,7 @@ import cv2
 import sys
 import threading
 import torch
+import time
 from queue import Queue, Empty, Full
 from ultralytics import YOLO
 from vidgear.gears import CamGear
@@ -27,8 +28,8 @@ class VehicleDetectionApp:
 
         # PERUBAHAN: Menaikkan ukuran antrean untuk buffer yang lebih baik,
         # ini akan menciptakan delay tapi video lebih mulus.
-        self.raw_frame_queue = Queue(maxsize=50)
-        self.processed_frame_queue = Queue(maxsize=50)
+        self.raw_frame_queue = Queue(maxsize=100)  # Ukuran buffer digandakan
+        self.processed_frame_queue = Queue(maxsize=100)
 
         self.is_running = threading.Event()
         self.is_running.set()
@@ -54,9 +55,9 @@ class VehicleDetectionApp:
                 break
 
             # PERUBAHAN UTAMA: Logika Anti-lag Dihapus.
-            # Sekarang thread ini akan menunggu jika antrean penuh,
+            # Sekarang thread ini akan MENUNGGU jika antrean penuh,
             # memaksa pemrosesan berjalan secara berurutan.
-            # Ini adalah kunci untuk menghilangkan "speed run".
+            # Ini adalah kunci untuk menghilangkan "patah-patah".
             self.raw_frame_queue.put(frame)
 
         stream.stop()
@@ -67,22 +68,39 @@ class VehicleDetectionApp:
         counter = VehicleCounter(zone_polygon, self.config)
         print("Thread prosesor siap.")
 
+        last_log_time = time.time()
+
         while self.is_running.is_set():
             try:
-                # Mengambil frame dari antrean buffer
-                frame = self.raw_frame_queue.get(timeout=1)
+                frame = self.raw_frame_queue.get(timeout=2)
 
-                # Jalankan deteksi
-                with torch.no_grad():  # Optimasi memori
+                start_time = time.time()
+
+                with torch.no_grad():
                     results = self.model.track(
                         frame, persist=True, classes=self.config.CLASS_ID_VEHICLES,
                         verbose=False, device=self.config.DEVICE)
 
-                # Anotasi frame dan masukkan ke antrean output
                 processed_frame = counter.process_frame(frame, results)
                 self.processed_frame_queue.put(processed_frame)
 
+                # Log status setiap 1 detik untuk tidak membanjiri terminal
+                current_time = time.time()
+                if current_time - last_log_time > 1.0:
+                    processing_time = current_time - start_time
+                    fps = 1.0 / \
+                        processing_time if processing_time > 0 else float(
+                            'inf')
+                    print(
+                        f"Buffer [Mentah: {self.raw_frame_queue.qsize()}/{self.raw_frame_queue.maxsize}, "
+                        f"Jadi: {self.processed_frame_queue.qsize()}/{self.processed_frame_queue.maxsize}] | "
+                        f"Processing FPS: {fps:.2f}"
+                    )
+                    last_log_time = current_time
+
             except Empty:
+                if not self.is_running.is_set():
+                    break
                 continue
 
         print("Thread prosesor berhenti.")
@@ -90,13 +108,18 @@ class VehicleDetectionApp:
     def run(self):
         """Mempersiapkan UI dan menjalankan semua thread."""
         print("Mengambil frame pertama untuk UI...")
-        stream = CamGear(source=self.config.YOUTUBE_URL,
-                         stream_mode=True).start()
-        first_frame = stream.read()
-        stream.stop()
+        try:
+            stream = CamGear(source=self.config.YOUTUBE_URL,
+                             stream_mode=True).start()
+            first_frame = stream.read()
+            stream.stop()
+        except Exception as e:
+            print(f"Error saat mengambil frame pertama: {e}")
+            return
 
         if first_frame is None:
-            print("Error: Gagal mendapatkan frame pertama.")
+            print(
+                "Error: Gagal mendapatkan frame pertama. Cek URL stream atau koneksi internet.")
             return
 
         zone_polygon = self.ui_drawer.draw_polygon_ui(first_frame)
@@ -120,26 +143,37 @@ class VehicleDetectionApp:
                 frame_to_show = self.processed_frame_queue.get(timeout=2)
                 cv2.imshow("Deteksi Kendaraan", frame_to_show)
             except Empty:
-                if not processor_thread.is_alive():
-                    print("Stream berakhir.")
+                # Jika prosesor sudah berhenti dan antrean kosong, keluar
+                if not processor_thread.is_alive() and self.processed_frame_queue.empty():
+                    print("Stream dan pemrosesan selesai.")
                     break
                 continue
 
-            # Mengatur kecepatan playback agar normal (~25 FPS)
-            if cv2.waitKey(40) & 0xFF == ord('q'):
+            # PERUBAHAN: Memberi jeda yang stabil untuk playback ~30 FPS
+            # Ini mencegah window "hang" dan memberi tampilan yang lebih smooth
+            if cv2.waitKey(30) & 0xFF == ord('q'):
                 self.stop()
 
+        self.stop()  # Pastikan semua berhenti jika loop selesai
         reader_thread.join(timeout=2)
         processor_thread.join(timeout=2)
 
     def stop(self):
         """Menghentikan semua proses dengan aman."""
-        print("Menutup aplikasi...")
-        self.is_running.clear()
-        cv2.destroyAllWindows()
+        if self.is_running.is_set():
+            print("Menutup aplikasi...")
+            self.is_running.clear()
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
+    # Pastikan file config ada
+    try:
+        import config
+    except ImportError:
+        print("Error: file config.py tidak ditemukan!")
+        sys.exit(1)
+
     app = VehicleDetectionApp()
     app.run()
     print("Aplikasi ditutup.")

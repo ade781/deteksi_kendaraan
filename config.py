@@ -13,7 +13,7 @@ YOUTUBE_URL = "https://www.youtube.com/live/P2QdljtuKwo?si=iAfnFoQSf7xcccrH"
 # Diubah ke "cpu" untuk mengatasi error "Torch not compiled with CUDA enabled".
 # PERINGATAN: Ini akan membuat program berjalan jauh lebih lambat.
 # Solusi permanen ada di penjelasan saya.
-MODEL_PATH = 'yolo11m.pt'  # Menggunakan model yang terbukti ada dan cepat
+MODEL_PATH = 'yolo12m.pt'  # Menggunakan model yang terbukti ada dan cepat
 DEVICE = "cuda"
 STREAM_RESOLUTION = (720, 360)
 
